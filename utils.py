@@ -54,7 +54,7 @@ def analyze_cake_image(image_raw):
     mean_ry_values = []
 
     # Step 1: Brightness-adjusted masking
-    enhanced = cv2.convertScaleAbs(image_raw, alpha=1.4, beta=35)
+    enhanced = cv2.convertScaleAbs(image_raw, alpha=1.3, beta=25)
     gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
     _, white_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
     white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
