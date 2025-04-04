@@ -42,32 +42,30 @@ def get_shade_number(ry_val):
     return 4
 
 shade_color_map = {
-    4:  (73, 74, 38),     5:  (45, 64, 54),     6:  (0, 255, 255),
-    7:  (0, 192, 255),    8:  (128, 128, 255),  9:  (255, 0, 255),
-    10: (128, 255, 255),  11: (0, 128, 128),    12: (255, 128, 128),
-    13: (255, 0, 128),    14: (0, 255, 0),      15: (0, 128, 0),
-    16: (255, 0, 0),      17: (128, 0, 0)
+    4:  (73,  74,  38),    5:  (45,  64,  54),    6:  (0,  255,  255),
+    7:  (0,  192,  255),   8:  (128, 128, 255),   9:  (255,   0, 255),
+    10: (128, 255, 255),   11: (0, 128, 128),     12: (255, 128, 128),
+    13: (255,   0, 128),   14: (0, 255,   0),     15: (0, 128,   0),
+    16: (255,   0,   0),   17: (128,   0,   0)
 }
 
 def analyze_cake_image(image_raw):
+    alpha, beta = 1.3, 25
     output = image_raw.copy()
     mean_ry_values = []
 
-    # Step 1: Brightness-adjusted masking
-    enhanced = cv2.convertScaleAbs(image_raw, alpha=1.3, beta=25)
-    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+    image_for_masking = cv2.convertScaleAbs(image_raw, alpha=alpha, beta=beta)
+    gray = cv2.cvtColor(image_for_masking, cv2.COLOR_BGR2GRAY)
     _, white_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     non_white_mask = cv2.bitwise_not(white_mask)
     _, binary = cv2.threshold(non_white_mask, 1, 255, cv2.THRESH_BINARY)
 
-    # Step 2: CLAHE Lab image
     lab = cv2.cvtColor(image_raw, cv2.COLOR_BGR2Lab)
     l, a, b = cv2.split(lab)
     l_eq = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
     image_clahe = cv2.cvtColor(cv2.merge((l_eq, a, b)), cv2.COLOR_Lab2BGR)
 
-    # Step 3: Object detection
     num_labels, labels = cv2.connectedComponents(binary)
 
     for label in range(1, num_labels):
@@ -76,31 +74,46 @@ def analyze_cake_image(image_raw):
             continue
 
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(output, cnts, -1, (0, 0, 0), 2)
         x, y, w, h = cv2.boundingRect(cnts[0])
         cx, cy = x + w // 2, y + h // 2
-        max_r = int(max(w, h) / 2)
-        zones = get_13_zones(mask, (cx, cy), max_r)
+        max_radius = int(max(w, h) / 2)
 
+        zone_masks = get_13_zones(mask, (cx, cy), max_radius)
         all_ry = []
 
-        for zone_mask in zones:
-            pixels = image_clahe[zone_mask > 0]
-            if len(pixels) < 10:
+        for zone_idx, zone_mask in enumerate(zone_masks):
+            zone_pixels = image_clahe[zone_mask > 0]
+            if len(zone_pixels) < 10:
                 continue
 
-            sorted_idx = np.argsort(np.mean(pixels, axis=1))
-            pixels = pixels[sorted_idx[int(0.05 * len(sorted_idx)):int(0.95 * len(sorted_idx))]]
-            avg_rgb = np.mean(pixels, axis=0)
-            lab_val = cv2.cvtColor(np.uint8([[avg_rgb]]), cv2.COLOR_RGB2Lab)[0][0]
-            ry = (lab_val[0] / 255.0) * 100
+            brightness = np.mean(zone_pixels, axis=1)
+            sorted_idx = np.argsort(brightness)
+            zone_pixels = zone_pixels[sorted_idx[int(0.05 * len(sorted_idx)):int(0.95 * len(sorted_idx))]]
+
+            avg_rgb = np.mean(zone_pixels, axis=0)
+            avg_rgb_uint8 = np.uint8([[avg_rgb]])
+            lab_pixel = cv2.cvtColor(avg_rgb_uint8, cv2.COLOR_RGB2Lab)[0][0]
+            ry = (lab_pixel[0] / 255.0) * 100
             shade = get_shade_number(ry)
             all_ry.append(ry)
 
             color = shade_color_map.get(shade, (80, 80, 80))
-            mask_3c = cv2.merge([zone_mask]*3)
-            fill = np.full_like(output, color)
-            blended = cv2.addWeighted(output, 1.0, fill, 0.5, 0)
+            fill_mask = np.zeros_like(output)
+            fill_mask[:] = color
+            mask_3c = cv2.merge([zone_mask] * 3)
+            blended = cv2.addWeighted(output, 1.0, fill_mask, 0.5, 0)
             output = np.where(mask_3c == 255, blended, output)
+
+            sub_cnts, _ = cv2.findContours(zone_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(output, sub_cnts, -1, (0, 0, 0), 1)
+
+            M = cv2.moments(zone_mask)
+            if M["m00"] != 0:
+                zx = int(M["m10"] / M["m00"])
+                zy = int(M["m01"] / M["m00"])
+                cv2.putText(output, f"{shade}", (zx - 10, zy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
         if all_ry:
             mean_ry = np.mean(all_ry)
@@ -115,7 +128,7 @@ def analyze_cake_image(image_raw):
             cv2.putText(output, label_text, (x + 4, y_label - 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
 
-    # Bar plot
+    # === Bar plot
     fig1 = plt.figure(figsize=(12, 4))
     plt.bar(range(len(mean_ry_values)), mean_ry_values, color='gray')
     plt.axhline(38.5, color='blue', linestyle='--', label='Shade 9')
@@ -127,10 +140,10 @@ def analyze_cake_image(image_raw):
     plt.legend()
     plt.tight_layout()
 
-    # Heatmap
+    # === Heatmap
     rows = int(np.sqrt(len(mean_ry_values)))
     cols = int(np.ceil(len(mean_ry_values) / rows))
-    padded = mean_ry_values + [np.nan] * (rows*cols - len(mean_ry_values))
+    padded = mean_ry_values + [np.nan] * (rows * cols - len(mean_ry_values))
     data = np.array(padded).reshape((rows, cols))
 
     fig2 = plt.figure(figsize=(6, 4))
